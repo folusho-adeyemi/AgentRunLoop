@@ -37,8 +37,3 @@ The database is a single file, `agent.db`, created next to `db.py`.
   are then ignored: orphan rows and dangling references are accepted. The pragma
   is **per-connection**, not stored in the file, so it must be re-issued on each
   new connection — which is why it lives in `get_conn()` rather than `init_db()`.
-
-## Status
-
-Stage 0 scaffold. `init_db()` runs on startup but its `CREATE TABLE` bodies are
-left empty — Stage 1 fills them in. No run logic, tools, or UI yet.
