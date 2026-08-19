@@ -6,11 +6,12 @@ import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel
 
 from credits import total_credits
 from db import get_conn, init_db, new_id
+from runner import execute_run
 
 
 @asynccontextmanager
@@ -72,6 +73,7 @@ def health():
 def create_run(
     body: CreateRunRequest,
     response: Response,
+    background_tasks: BackgroundTasks,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     if not idempotency_key:
@@ -120,6 +122,11 @@ def create_run(
             # Same key, same body: hand back the run the first call created.
             response.status_code = 200
             return serialize_run(conn, existing)
+
+        # Fresh insert only. The retry branch above returns before reaching
+        # here, so a retried request never launches a second loop against a
+        # run that is already executing.
+        background_tasks.add_task(execute_run, run_id)
 
         response.status_code = 201
         run = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
