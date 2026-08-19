@@ -27,12 +27,9 @@ def new_id() -> str:
     return uuid.uuid4().hex
 
 
-def init_db() -> None:
-    """Create tables if they do not exist. Called once on app startup."""
-    conn = get_conn()
-    try:
-        conn.executescript(
-            """
+# Single source of truth for the schema, so tests can build the same tables in
+# an in-memory database instead of re-declaring them.
+SCHEMA_SQL = """
             CREATE TABLE IF NOT EXISTS runs (
                 id              TEXT PRIMARY KEY,
 
@@ -94,8 +91,14 @@ def init_db() -> None:
                 reason     TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
-            """
-        )
+"""
+
+
+def init_db() -> None:
+    """Create tables if they do not exist. Called once on app startup."""
+    conn = get_conn()
+    try:
+        conn.executescript(SCHEMA_SQL)
         conn.commit()
     finally:
         conn.close()
