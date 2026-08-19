@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentRunLoop</title>
+<!-- Inline favicon: avoids a 404 for /favicon.ico on every page load. -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>&#9889;</text></svg>">
+<style>
+  :root {
+    --bg:     #000;
+    --line:   #262626;
+    --text:   #fff;
+    --muted:  #777;
+    --purple: #a855f7;
+    --green:  #22c55e;
+    --red:    #ef4444;
+    --yellow: #eab308;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 3rem 1.5rem; background: var(--bg); color: var(--text);
+    font: 14px/1.6 var(--mono);
+  }
+  .wrap { max-width: 780px; margin: 0 auto; }
+
+  h1 { margin: 0 0 2.5rem; font-size: .875rem; font-weight: 400;
+       letter-spacing: .18em; text-transform: uppercase; }
+  h1 b { color: var(--purple); font-weight: 400; }
+
+  h2 { font-size: .7rem; font-weight: 400; letter-spacing: .16em;
+       text-transform: uppercase; color: var(--muted);
+       margin: 2.5rem 0 .75rem; }
+
+  label { display: block; font-size: .7rem; letter-spacing: .12em;
+          text-transform: uppercase; color: var(--muted); margin-bottom: .4rem; }
+  input {
+    width: 100%; padding: .5rem .6rem; background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 0; font: inherit;
+  }
+  input:focus { outline: none; border-color: var(--purple); }
+
+  .row { display: flex; gap: .75rem; align-items: flex-end; flex-wrap: wrap; }
+  .row > .grow { flex: 1 1 16rem; }
+
+  button {
+    padding: .5rem 1rem; border: 1px solid var(--line); border-radius: 0;
+    background: var(--bg); color: var(--text); font: inherit; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--purple); color: var(--purple); }
+  button:disabled { color: var(--muted); cursor: not-allowed; }
+  button.primary { border-color: var(--purple); color: var(--purple); }
+  button.primary:hover:not(:disabled) { background: var(--purple); color: #000; }
+
+  .hint { font-size: .75rem; color: var(--muted); margin: .75rem 0 0; }
+
+  .meta { display: flex; gap: 2rem; flex-wrap: wrap; align-items: baseline;
+          border: 1px solid var(--line); padding: .75rem 1rem; }
+  .meta .k { font-size: .7rem; letter-spacing: .12em; text-transform: uppercase;
+             color: var(--muted); margin-right: .5rem; }
+
+  /* Status is the only place colour carries meaning. */
+  .st-PENDING, .st-idle, .st-STARTING { color: var(--muted); }
+  .st-RUNNING, .st-LIMIT_REACHED      { color: var(--yellow); }
+  .st-SUCCEEDED, .st-COMPLETED        { color: var(--green); }
+  .st-FAILED                          { color: var(--red); }
+
+  table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  th { text-align: left; font-weight: 400; font-size: .7rem; letter-spacing: .12em;
+       text-transform: uppercase; color: var(--muted);
+       padding: .4rem .6rem; border-bottom: 1px solid var(--line); }
+  td { padding: .4rem .6rem; border-bottom: 1px solid #141414;
+       vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  td.out { color: var(--muted); word-break: break-word; }
+  .bordered { border: 1px solid var(--line); }
+
+  pre.output {
+    margin: 0; padding: .9rem 1rem; border: 1px solid var(--line);
+    font: inherit; font-size: .8rem; white-space: pre-wrap; word-break: break-word;
+  }
+
+  .log { border: 1px solid var(--line); font-size: .75rem; color: var(--muted);
+         max-height: 8rem; overflow-y: auto; }
+  .log div { padding: .3rem .75rem; border-bottom: 1px solid #141414; }
+  .log div:last-child { border-bottom: none; }
+  .empty { color: var(--muted); font-size: .8rem; padding: .75rem 1rem;
+           border: 1px solid var(--line); margin: 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Agent<b>RunLoop</b></h1>
+
+  <div class="row">
+    <div class="grow">
+      <label for="goal">Goal</label>
+      <input id="goal" value="summarize the docs"
+             placeholder="try: fail once / failhard / loop forever">
+    </div>
+    <div style="flex:0 0 8rem">
+      <label for="budget">Budget</label>
+      <input id="budget" type="number" min="0" step="10" value="100">
+    </div>
+    <button id="run" class="primary">Run</button>
+    <button id="resend" disabled title="Resend the same Idempotency-Key and body">
+      Retry request
+    </button>
+  </div>
+  <p class="hint">Retry request resends the identical key and body — the server
+    returns the same run with 200 rather than creating a second one.</p>
+
+  <h2>Run</h2>
+  <div class="meta">
+    <span><span class="k">Status</span><span id="status" class="st-idle">IDLE</span></span>
+    <span><span class="k">Id</span><span id="runid" class="st-idle">—</span></span>
+    <span><span class="k">Credits</span><span id="credits">0</span>/<span id="budgetOut">0</span></span>
+    <button id="resume" style="display:none">Resume run</button>
+  </div>
+
+  <h2>Steps</h2>
+  <div id="stepsWrap"><p class="empty">No steps yet.</p></div>
+
+  <div id="outputPanel" style="display:none">
+    <h2>Output</h2>
+    <pre class="output" id="output"></pre>
+  </div>
+
+  <h2>Log</h2>
+  <div class="log" id="log"><div>Ready.</div></div>
+</div>
+
+<script>
+const TERMINAL = ["COMPLETED", "FAILED", "LIMIT_REACHED"];
+const POLL_MS = 750;
+
+// Held so "Retry request" can resend the EXACT same key and body.
+let currentKey = null;
+let currentBody = null;
+let currentRunId = null;
+let pollTimer = null;
+
+const $ = (id) => document.getElementById(id);
+
+function uuid() {
+  // randomUUID needs a secure context; localhost qualifies, but keep a fallback.
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return "k-" + Math.random().toString(16).slice(2) + Date.now().toString(16);
+}
+
+function log(msg) {
+  const line = document.createElement("div");
+  line.innerHTML = msg;
+  $("log").prepend(line);
+}
+
+function setStatus(status) {
+  const el = $("status");
+  el.textContent = status;
+  el.className = "st-" + status;
+}
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+function startPolling() {
+  stopPolling();
+  poll();
+  pollTimer = setInterval(poll, POLL_MS);
+}
+
+function render(run) {
+  setStatus(run.status);
+  $("runid").textContent = run.id.slice(0, 12);
+  $("runid").className = "";
+  $("credits").textContent = run.credits_used;
+  $("budgetOut").textContent = run.credit_budget;
+
+  if (run.steps.length === 0) {
+    $("stepsWrap").innerHTML = '<p class="empty">No steps yet.</p>';
+  } else {
+    const rows = run.steps.map((s) => `
+      <tr>
+        <td>${s.step_index}</td>
+        <td>${s.tool_name ?? "—"}</td>
+        <td class="st-${s.status}">${s.status}</td>
+        <td>${s.attempt_count}</td>
+        <td class="out">${(s.tool_output ?? "").replace(/</g, "&lt;")}</td>
+      </tr>`).join("");
+    $("stepsWrap").innerHTML = `<table class="bordered">
+      <thead><tr><th>#</th><th>Tool</th><th>Status</th><th>Att</th><th>Output</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  }
+
+  if (TERMINAL.includes(run.status)) {
+    stopPolling();
+    if (run.output) {
+      $("outputPanel").style.display = "";
+      $("output").textContent = run.output;
+    }
+    log(`settled <span class="st-${run.status}">${run.status}</span> — `
+      + `${run.credits_used}/${run.credit_budget} credits, ${run.steps.length} steps`);
+  }
+  // Only a FAILED run can be resumed; the server enforces this with a 409.
+  $("resume").style.display = run.status === "FAILED" ? "" : "none";
+}
+
+async function poll() {
+  try {
+    const res = await fetch(`/runs/${currentRunId}`);
+    if (!res.ok) { stopPolling(); log(`GET /runs — ${res.status}`); return; }
+    render(await res.json());
+  } catch (e) {
+    stopPolling();
+    log("poll failed — " + e.message);
+  }
+}
+
+async function postRun() {
+  $("run").disabled = true;
+  $("resend").disabled = true;
+  // Clear the previous run before the request goes out, and stop its poller —
+  // otherwise a late response would paint stale steps over the new run.
+  stopPolling();
+  setStatus("STARTING");
+  $("stepsWrap").innerHTML = '<p class="empty">No steps yet.</p>';
+  $("outputPanel").style.display = "none";
+  $("resume").style.display = "none";
+  try {
+    const res = await fetch("/runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": currentKey },
+      body: JSON.stringify(currentBody),
+    });
+    const data = await res.json();
+
+    if (res.status === 201) {
+      log(`POST /runs — 201 created`);
+    } else if (res.status === 200) {
+      log(`POST /runs — 200 idempotent replay, same run`);
+    } else {
+      log(`POST /runs — ${res.status} ${data.detail ?? ""}`);
+      setStatus("idle");
+      return;
+    }
+
+    currentRunId = data.id;
+    render(data);
+    startPolling();
+  } catch (e) {
+    log("request failed — " + e.message);
+  } finally {
+    $("run").disabled = false;
+    $("resend").disabled = currentKey === null;
+  }
+}
+
+$("run").addEventListener("click", () => {
+  // A fresh key means a genuinely new run.
+  currentKey = uuid();
+  currentBody = {
+    goal: $("goal").value,
+    credit_budget: Number($("budget").value),
+  };
+  postRun();
+});
+
+// Same key, same body — the idempotency demonstration.
+$("resend").addEventListener("click", postRun);
+
+$("resume").addEventListener("click", async () => {
+  $("resume").disabled = true;
+  try {
+    const res = await fetch(`/runs/${currentRunId}/retry`, { method: "POST" });
+    const data = await res.json();
+    if (res.ok) {
+      log(`POST /retry — 200 resuming from checkpoint`);
+      render(data);
+      startPolling();
+    } else {
+      log(`POST /retry — ${res.status} ${data.detail}`);
+    }
+  } finally {
+    $("resume").disabled = false;
+  }
+});
+</script>
+</body>
+</html>

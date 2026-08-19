@@ -5,8 +5,10 @@ import json
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from credits import total_credits
@@ -62,6 +64,15 @@ def serialize_run(conn: sqlite3.Connection, run: sqlite3.Row) -> dict:
         "output": run["output"],
         "steps": [dict(s) for s in steps],
     }
+
+
+INDEX_HTML = Path(__file__).resolve().parent / "static" / "index.html"
+
+
+@app.get("/", include_in_schema=False)
+def index():
+    """Single-page UI. Plain HTML/JS — no build step, no framework."""
+    return FileResponse(INDEX_HTML)
 
 
 @app.get("/health")
@@ -129,6 +140,40 @@ def create_run(
         background_tasks.add_task(execute_run, run_id)
 
         response.status_code = 201
+        run = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return serialize_run(conn, run)
+    finally:
+        conn.close()
+
+
+@app.post("/runs/{run_id}/retry")
+def retry_run(run_id: str, background_tasks: BackgroundTasks):
+    conn = get_conn()
+    try:
+        run = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+
+        # Claim the run atomically: flip FAILED -> RUNNING in one statement and
+        # let rowcount decide who won. A SELECT-then-check would let two
+        # concurrent retries both pass and start two loops over one run — the
+        # same race the idempotency-key INSERT avoids.
+        claimed = conn.execute(
+            "UPDATE runs SET status = 'RUNNING' WHERE id = ? AND status = 'FAILED'",
+            (run_id,),
+        ).rowcount
+        conn.commit()
+
+        if not claimed:
+            raise HTTPException(
+                status_code=409,
+                detail=f"run is {run['status']}, only a FAILED run can be retried",
+            )
+
+        # execute_run rebuilds history from the SUCCEEDED steps, so it picks up
+        # at the first step that is not SUCCEEDED and re-executes nothing else.
+        background_tasks.add_task(execute_run, run_id)
+
         run = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         return serialize_run(conn, run)
     finally:
