@@ -58,16 +58,4 @@ The mock planner is deterministic, keyed off substrings in the goal:
 | `fail`        | Step 3 throws once, the in-loop retry recovers it                |
 | `failhard`    | Step 3 outlasts the retries → `FAILED`; `/retry` resumes it      |
 
-## Two SQLite defaults worth overriding
-
-`db.get_conn()` sets both on every connection:
-
-- **`row_factory = sqlite3.Row`** — by default `sqlite3` yields plain tuples, so
-  reads become positional (`row[0]`) and silently break when a column is added or
-  reordered. `sqlite3.Row` gives dict-like access by name (`row["status"]`) and
-  still supports indexing, at effectively no cost.
-- **`PRAGMA foreign_keys = ON`** — SQLite ships with foreign-key enforcement
-  **off** for backwards compatibility. Without it, `REFERENCES` clauses parse and
-  are then ignored: orphan rows and dangling references are accepted. The pragma
-  is **per-connection**, not stored in the file, so it must be re-issued on each
-  new connection — which is why it lives in `get_conn()` rather than `init_db()`.
+## [Demo](https://www.loom.com/share/29e2a5eca819434681a8fa2faf027e65)
